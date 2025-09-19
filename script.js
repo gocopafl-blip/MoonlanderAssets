@@ -435,6 +435,9 @@ class SpaceScene {
         //this.orbitData = null;
         this.dockingRadius = 1000;
         
+        // --- State Preservation ---
+        this.savedState = null; // Stores scene state during scene transitions
+        
         // --- World Settings ---
         this.WORLD_WIDTH = canvas.width * 200;
         this.WORLD_HEIGHT = canvas.height * 200;
@@ -558,15 +561,23 @@ emitThrusterParticles() {
         const minRadius = 1200;  // Allows for smaller planets
         const maxRadius = 2000; // Allows for larger planets
 
+        const planetBackgrounds = [
+        ['images/BluePlanet_1a.png', 'images/BluePlanet_1b.png'], // Backgrounds for planet 1
+        ['images/EarthPlanet_2a.png', 'images/EarthPlanet_2b.png'], // Backgrounds for planet 2
+        ['images/SwirlingPlanet_3a.png', 'images/SwirlingPlanet_3b.png']  // Backgrounds for planet 3
+    ];
+
         while (celestialBodies.length < numPlanets && attempts < 1000) {
             const params = this.calculatePlanetParameters(minRadius, maxRadius);
+            const planetIndex = celestialBodies.length % planetImages.length;
             let newPlanet = {
                 x: Math.random() * this.WORLD_WIDTH * 0.8 + this.WORLD_WIDTH * 0.1,
                 y: Math.random() * this.WORLD_HEIGHT * 0.8 + this.WORLD_HEIGHT * 0.1,
                 radius: params.radius,
                 mass: params.mass,
-                image: planetImages[celestialBodies.length % planetImages.length]
-            };
+                image: planetImages[celestialBodies.length % planetImages.length],
+                backgrounds: planetBackgrounds[planetIndex] // Assign the backgrounds
+                };
 
             let overlapping = false;
             for (const existingPlanet of celestialBodies) {
@@ -621,21 +632,27 @@ emitThrusterParticles() {
             this.createPlanets();
         }
 
-        // Get the alpha dock's position for ship placement
-        const alphaDock = this.spaceDocks[0];
-        if (alphaDock) {
-            // Position the ship 1000 units to the right of the dock, and 300 units below
-            this.ship = new Ship(alphaDock.x + 980, alphaDock.y + 270, this);
-        } else {
-            // Fallback position if no dock exists
-            this.ship = new Ship(this.WORLD_WIDTH / 2, this.WORLD_HEIGHT / 2, this);
-        }
+        // Try to restore saved state first, otherwise create new ship and camera
+        if (!this.restoreState()) {
+            // No saved state, create new ship and camera at starting position
+            const alphaDock = this.spaceDocks[0];
+            if (alphaDock) {
+                // Position the ship 1000 units to the right of the dock, and 300 units below
+                this.ship = new Ship(alphaDock.x + 980, alphaDock.y + 270, this);
+            } else {
+                // Fallback position if no dock exists
+                this.ship = new Ship(this.WORLD_WIDTH / 2, this.WORLD_HEIGHT / 2, this);
+            }
 
-        // Set up the camera to follow the ship
-        this.camera = new Camera(this.ship, this.WORLD_WIDTH, this.WORLD_HEIGHT, { 
-            zoomSmoothing: this.zoomSmoothing,
-            followSmoothing: 0.5  // Instant camera following for tight ship centering
-        });
+            // Set up the camera to follow the ship
+            this.camera = new Camera(this.ship, this.WORLD_WIDTH, this.WORLD_HEIGHT, { 
+                zoomSmoothing: this.zoomSmoothing,
+                followSmoothing: 0.5  // Instant camera following for tight ship centering
+            });
+        } else {
+            // State was restored, but make sure camera target is set correctly
+            this.camera.target = this.ship;
+        }
 
         canvas.style.display = 'block';
         zoomControls.style.display = 'flex';
@@ -1190,6 +1207,58 @@ emitThrusterParticles() {
             else if (!newThrusting && oldThrusting) { thrusterSound.pause(); }
         }
     }
+
+    // --- State Preservation Methods ---
+    saveState() {
+        if (this.ship && this.camera) {
+            this.savedState = {
+                ship: {
+                    x: this.ship.x,
+                    y: this.ship.y,
+                    vx: this.ship.vx,
+                    vy: this.ship.vy,
+                    rotation: this.ship.rotation,
+                    isOrbitLocked: this.ship.isOrbitLocked,
+                    inStableOrbit: this.ship.inStableOrbit,
+                    orbitingPlanet: this.ship.orbitingPlanet,
+                    isDocked: this.ship.isDocked
+                },
+                camera: {
+                    x: this.camera.x,
+                    y: this.camera.y,
+                    zoom: this.camera.zoom,
+                    targetZoom: this.camera.targetZoom
+                }
+            };
+            console.log('SpaceScene state saved:', this.savedState);
+        }
+    }
+
+    restoreState() {
+        if (this.savedState && this.ship && this.camera) {
+            // Restore ship state
+            this.ship.x = this.savedState.ship.x;
+            this.ship.y = this.savedState.ship.y;
+            this.ship.vx = this.savedState.ship.vx;
+            this.ship.vy = this.savedState.ship.vy;
+            this.ship.rotation = this.savedState.ship.rotation;
+            this.ship.isOrbitLocked = this.savedState.ship.isOrbitLocked;
+            this.ship.inStableOrbit = this.savedState.ship.inStableOrbit;
+            this.ship.orbitingPlanet = this.savedState.ship.orbitingPlanet;
+            this.ship.isDocked = this.savedState.ship.isDocked;
+
+            // Restore camera state
+            this.camera.x = this.savedState.camera.x;
+            this.camera.y = this.savedState.camera.y;
+            this.camera.zoom = this.savedState.camera.zoom;
+            this.camera.targetZoom = this.savedState.camera.targetZoom;
+
+            console.log('SpaceScene state restored:', this.savedState);
+            this.savedState = null; // Clear saved state after restoration
+            return true;
+        }
+        return false;
+    }
 };
 const spaceDockScene = {
     name: 'menu', // We can reuse the menu music for now
@@ -1234,11 +1303,16 @@ const spaceDockScene = {
 // --- Lander Scene ---
 const landerScene = {
     name: 'lander', // Give the scene a name for the MusicManager
+    backgroundImage: null,
     lander: null, terrain: null, particles: [], stars: [], camera: null,
     baseGravity: 0, difficultySettings: null, selectedShip: null, 
     gameState: 'playing', zoomLevel: 1.5,
-    ZOOM_IN: 1.5, ZOOM_OUT: 0.75,
-    WORLD_WIDTH: canvas.width * 3, WORLD_HEIGHT: canvas.height * 2,
+    ZOOM_IN: 1.5, 
+    ZOOM_OUT: 0.75,
+    minZoom: 0.5,
+    maxZoom: 2.0,
+    WORLD_WIDTH: canvas.width * 3, 
+    WORLD_HEIGHT: canvas.height * 3,
     BASE_THRUST_POWER: 0.035, ROTATION_SPEED: 0.05,
     Lander: class {
         constructor(x, y, initialFuel, shipData) {
@@ -1345,6 +1419,29 @@ const landerScene = {
         }
     },
     drawWorld() {
+        if (this.backgroundImage && this.backgroundImage.complete) {
+            // Calculate 16:9 aspect ratio dimensions that fit the world
+            const aspectRatio = 16 / 9;
+            const worldAspectRatio = this.WORLD_WIDTH / this.WORLD_HEIGHT;
+            
+            let bgWidth, bgHeight, bgX, bgY;
+            
+            if (worldAspectRatio > aspectRatio) {
+                // World is wider than 16:9, fit to width
+                bgWidth = this.WORLD_WIDTH;
+                bgHeight = bgWidth / aspectRatio;
+                bgX = 0;
+                bgY = (this.WORLD_HEIGHT - bgHeight) / 2;
+            } else {
+                // World is taller than 16:9, fit to height
+                bgHeight = this.WORLD_HEIGHT;
+                bgWidth = bgHeight * aspectRatio;
+                bgX = (this.WORLD_WIDTH - bgWidth) / 2;
+                bgY = 0;
+            }
+            
+            ctx.drawImage(this.backgroundImage, bgX, bgY, bgWidth, bgHeight);
+        }
         ctx.fillStyle = 'white';
         this.stars.forEach(s => { ctx.beginPath(); ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2); ctx.fill(); });
         const padY = this.terrain.points.find(p => p.x >= this.terrain.padStart)?.y || this.WORLD_HEIGHT - 100;
@@ -1367,7 +1464,7 @@ const landerScene = {
         if (this.gameState === 'landed') {
             ctx.textAlign = 'center'; ctx.font = '50px "Consolas", "Courier New", "Monaco", monospace';
             ctx.fillStyle = '#0f0';
-            ctx.fillText('THE EAGLE HAS LANDED', canvas.width / 2, canvas.height / 2);
+            ctx.fillText('SUCCESS!', canvas.width / 2, canvas.height / 2);
         } else if (this.gameState === 'crashed') {
             ctx.textAlign = 'center'; ctx.font = '50px "Consolas", "Courier New", "Monaco", monospace'; ctx.fillStyle = '#f00';
             ctx.fillText('MISSION FAILED', canvas.width / 2, canvas.height / 2);
@@ -1375,7 +1472,8 @@ const landerScene = {
         if (this.gameState === 'landed' || this.gameState === 'crashed') {
             ctx.font = '20px "Consolas", "Courier New", "Monaco", monospace';
             ctx.fillStyle = '#fff';
-            ctx.fillText('Click to return to menu', canvas.width / 2, canvas.height / 2 + 40);
+            const returnText = this.gameState === 'landed' ? 'Click to return to ship' : 'Click to return to menu';
+            ctx.fillText(returnText, canvas.width / 2, canvas.height / 2 + 40);
         }
     },
     getAltitude() {
@@ -1429,12 +1527,12 @@ const landerScene = {
                     if (thrusterSound.isLoaded) thrusterSound.pause();
                 } else { this.triggerCrash(); }
             }
-            const zoomOutZone = { left: this.terrain.padStart - canvas.width * 0.2, right: this.terrain.padEnd + canvas.width * 0.2 };
+            /*const zoomOutZone = { left: this.terrain.padStart - canvas.width * 0.2, right: this.terrain.padEnd + canvas.width * 0.2 };
             if (this.camera.targetZoom === this.ZOOM_IN && (this.lander.x < zoomOutZone.left || this.lander.x > zoomOutZone.right)) {
                 this.camera.targetZoom = this.ZOOM_OUT;
             } else if (this.camera.targetZoom === this.ZOOM_OUT && (this.lander.x > zoomOutZone.left && this.lander.x < zoomOutZone.right)) {
                 this.camera.targetZoom = this.ZOOM_IN;
-            }
+            }*/
         }
         this.particles = this.particles.filter(p => {
             p.update();
@@ -1464,19 +1562,36 @@ const landerScene = {
             case 'medium': this.difficultySettings = { gravity: 0.01, fuel: 700, safeSpeed: 1.0, padWidth: 100 }; break;
             case 'hard': this.difficultySettings = { gravity: 0.012, fuel: 500, safeSpeed: 0.7, padWidth: 60 }; break;
         }
-        this.baseGravity = this.difficultySettings.gravity;
-        this.generateTerrain();
-        this.lander = new this.Lander(this.WORLD_WIDTH / 2, 150, this.difficultySettings.fuel, this.selectedShip);
-        this.camera = new Camera(this.lander, this.WORLD_WIDTH, this.WORLD_HEIGHT, {
-            followSmoothing: 0.08, // A slightly slower, smoother follow for the lander
-            zoomSmoothing: 0.04    // A custom zoom speed for the lander scene
-        });
-        this.camera.targetZoom = this.ZOOM_IN;
-        this.particles = [];
-        this.gameState = 'playing';
-        shipSelectionMenu.style.display = 'none';
-        canvas.style.display = 'block';
-    },
+        if (settings.planet && settings.planet.backgrounds) {
+        const backgrounds = settings.planet.backgrounds;
+        const randomIndex = Math.floor(Math.random() * backgrounds.length);
+        const randomBackgroundSrc = ASSET_BASE_URL + backgrounds[randomIndex];
+
+        this.backgroundImage = new Image();
+        this.backgroundImage.src = randomBackgroundSrc;
+        this.backgroundImage.onload = () => {
+            console.log(`Lander background loaded: ${randomBackgroundSrc}`);
+        };
+        this.backgroundImage.onerror = () => {
+            console.error(`Failed to load lander background: ${randomBackgroundSrc}`);
+            this.backgroundImage = null; // Set to null if it fails to load
+        };
+        } else {
+            this.backgroundImage = null; // No background if no planet data is provided
+        }    
+            this.baseGravity = this.difficultySettings.gravity;
+            this.generateTerrain();
+            this.lander = new this.Lander(this.WORLD_WIDTH / 2, 150, this.difficultySettings.fuel, this.selectedShip);
+            this.camera = new Camera(this.lander, this.WORLD_WIDTH, this.WORLD_HEIGHT, {
+                followSmoothing: 0.08, // A slightly slower, smoother follow for the lander
+                zoomSmoothing: 0.04    // A custom zoom speed for the lander scene
+            });
+            this.camera.targetZoom = this.ZOOM_IN;
+            this.particles = [];
+            this.gameState = 'playing';
+            shipSelectionMenu.style.display = 'none';
+            canvas.style.display = 'block';
+        },
     handleKeys(e, isDown) {
         if (!this.lander || this.gameState !== 'playing') return;
         const oldThrusting = this.lander.thrusting;
@@ -1569,7 +1684,7 @@ function init() {
     Object.values(dockTypes).forEach(dock => {
         dock.img.src = ASSET_BASE_URL + dock.src;
     });
-    landerScene.createStars();
+    //landerScene.createStars();
     
     const spaceScene = new SpaceScene();
      document.getElementById('zoomInBtn').addEventListener('click', () => {
@@ -1625,9 +1740,17 @@ function init() {
     document.getElementById('launchBtn').addEventListener('click', () => {
     // Check if the current scene is the spaceScene and we are in orbit
     if (gameManager.activeScene === spaceScene && spaceScene.ship.inStableOrbit) {
+        // Save the current space scene state before switching
+        spaceScene.saveState();
+        
         // Use the existing settings to switch to the lander scene
-        settings.selectedShip = shipTypes.classic;
-        gameManager.switchScene(landerScene, settings);
+        const orbitingPlanet = spaceScene.ship.orbitingPlanet;
+
+        gameManager.switchScene(landerScene, {
+            ...settings,
+            selectedShip: shipTypes.classic,
+            planet: orbitingPlanet
+        });
     }
     });
     document.getElementById('easyBtn').addEventListener('click', () => gameManager.switchScene(spaceScene, { difficulty: 'easy' }));
@@ -1669,34 +1792,39 @@ function init() {
     
     canvas.addEventListener('click', () => {
         if (gameManager.activeScene === landerScene && (landerScene.gameState === 'landed' || landerScene.gameState === 'crashed')) {
-            musicManager.stop(); // NEW: Tell the manager to stop all music
             if (thrusterSound.isLoaded) thrusterSound.pause();
-            gameManager.activeScene = null; // Stop the animation loop for the scene
-            menu.style.display = 'block';
-            shipSelectionMenu.style.display = 'none';
-            canvas.style.display = 'none';
+            
+            if (landerScene.gameState === 'landed') {
+                // SUCCESS: Return to space scene with preserved state
+                console.log('Lander mission successful, returning to space scene with preserved state');
+                gameManager.switchScene(spaceScene, settings);
+            } else {
+                // CRASHED: Return to spacedock scene (no state preservation needed)
+                console.log('Lander mission failed, returning to spacedock');
+                gameManager.switchScene(spaceDockScene);
+            }
         }
     });
     canvas.addEventListener('wheel', event => {
     // First, prevent the browser from scrolling the whole page
     event.preventDefault();
+ const scene = gameManager.activeScene; // Get the currently active scene
 
-    // Only apply zoom if we are in the space scene
-    if (gameManager.activeScene === spaceScene) {
-        // Determine zoom direction (deltaY is negative for scroll up, positive for scroll down)
+    // Check if the active scene has a camera and zoom limits
+    if (scene && scene.camera && scene.minZoom && scene.maxZoom) {
         const zoomAmount = 0.1;
         let newZoom;
 
         if (event.deltaY < 0) {
             // Scrolling up -> Zoom In
-            newZoom = spaceScene.camera.targetZoom + zoomAmount;
+            newZoom = scene.camera.targetZoom + zoomAmount;
         } else {
             // Scrolling down -> Zoom Out
-            newZoom = spaceScene.camera.targetZoom - zoomAmount;
+            newZoom = scene.camera.targetZoom - zoomAmount;
         }
 
-        // Clamp the zoom level to the min/max values to prevent extreme zooming
-        spaceScene.camera.targetZoom = Math.max(spaceScene.minZoom, Math.min(newZoom, spaceScene.maxZoom));
+        // Clamp the zoom using the current scene's min/max values
+        scene.camera.targetZoom = Math.max(scene.minZoom, Math.min(newZoom, scene.maxZoom));
     }
 }, { passive: false }); // passive: false is needed to allow preventDefault
     
